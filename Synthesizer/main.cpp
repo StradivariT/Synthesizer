@@ -4,7 +4,7 @@
 
 using namespace std;
 
-double dFrequencyOutput = 0.0;
+atomic<double> dFrequencyOutput = 0.0;
 
 double MakeNoise(double dRunTime) {
 	double dOutput = sin(2 * PI * dFrequencyOutput * dRunTime);
@@ -28,10 +28,23 @@ int main() {
 	// Link the noise making function to the sound machine
 	sound.SetUserFunction(MakeNoise);
 
+	// If we take 440Hz and halve it twice, we get 110Hz which means that we went down 2 octaves
+	// Conventionally, there are 12 notes per octave
+	double dOctaveBaseFrequency = 110.0; // A2
+	double d12thRootOf2 = pow(2.0, 1.0 / 12.0);
+
+	// Since GetAsync returns a 16 bit short value, we mask out the most significant bit that represents if the key is pressed or not
 	while (true) {
-		if (GetAsyncKeyState('A'))
-			dFrequencyOutput = 440.0;
-		else
+		bool isKeyPressed{ false };
+		
+		for (int i = 0; i < 15; i++) {
+			if (GetAsyncKeyState((unsigned char)("ZSXCFVGBNJMK\xbcL\xbe"[i])) & 0x8000) {
+				dFrequencyOutput = dOctaveBaseFrequency * pow(d12thRootOf2, i);
+				isKeyPressed = true;
+			}
+		}
+
+		if (!isKeyPressed)
 			dFrequencyOutput = 0.0;
 	}
 
