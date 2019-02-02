@@ -17,11 +17,11 @@ struct EnvelopeASDR {
 	bool isNotePressed;
 
 	EnvelopeASDR() {
-		attackTime = 0.100;
-		decayTime = 0.01;
-		startAmplitude = 1;
+		attackTime = 0.10;
+		decayTime = 0.1;
+		startAmplitude = 1.0;
 		sustainAmplitude = 0.8;
-		releaseTime = 0.200;
+		releaseTime = 0.20;
 		triggerOnTime = 0.0;
 		triggerOffTime = 0.0;
 		isNotePressed = false;
@@ -58,7 +58,6 @@ struct EnvelopeASDR {
 	}
 };
 
-EnvelopeASDR envelope;
 atomic<double> frequencyOutput{ 0.0 };
 double masterVolume{ 0.4 };
 enum waveTypes {
@@ -67,39 +66,88 @@ enum waveTypes {
 	AnalogSquare,
 	Triangle,
 	AnalogSawtooth,
-	OptimalSawtooth
+	OptimalSawtooth,
+	Noise
 };
+
+struct Instrument {
+	double volume;
+	EnvelopeASDR envelope;
+
+	virtual double GetSound(double runTime, double hz) = 0;
+};
+
+double Oscillator(double, double, waveTypes, double = 0.0, double = 0.0);
+
+struct Bell : public Instrument {
+	Bell() {
+		envelope.attackTime = 0.01;
+		envelope.decayTime = 1.0;
+		envelope.sustainAmplitude = 0.0;
+		envelope.releaseTime = 1.0;
+	}
+
+	double GetSound(double runTime, double hz) {
+		return envelope.GetAmplitude(runTime) * (
+			Oscillator(runTime, frequencyOutput * 2.0, Sine, 5.0, 0.001)
+			+ 0.5 * Oscillator(runTime, frequencyOutput * 3.0, Sine)
+			+ 0.25 * Oscillator(runTime, frequencyOutput * 4.0, Sine)
+		);
+	}
+};
+
+struct Harmonica : public Instrument {
+	Harmonica() {
+		envelope.attackTime = 0.10;
+		envelope.decayTime = 0.1;
+		envelope.sustainAmplitude = 0.8;
+		envelope.releaseTime = 0.20;
+	}
+
+	double GetSound(double runTime, double hz) {
+		return envelope.GetAmplitude(runTime) * (
+			Oscillator(runTime, frequencyOutput, Square, 5.0, 0.001)
+			+ 0.5 * Oscillator(runTime, frequencyOutput * 1.5, Square)
+			+ 0.25 * Oscillator(runTime, frequencyOutput * 2.0, Square)
+			+ 0.05 * Oscillator(runTime, 0, Noise)
+			);
+	}
+};
+
+Instrument *voice{ nullptr };
 
 double HzToW(double hz) {
 	return 2.0 * PI * hz;
 }
 
-double Oscillator(double runTime, double hz, waveTypes waveType) {
+double Oscillator(double runTime, double hz, waveTypes waveType, double lowFreqHz, double lowFreqAmp) {
+	double modFreq{ HzToW(hz) * runTime + hz * lowFreqAmp * sin(HzToW(lowFreqHz) * runTime) };
+
 	switch (waveType) {
 	case Sine:
-		return sin(HzToW(hz) * runTime);
+		return sin(modFreq);
 
 	case Square:
-		//return sin(HzToW(hz) * runTime) > 0.0 ? 1.0 : -1.0;
-		return fmod(runTime, 1.0 / hz) < 1.0 / (2.0 * hz) ? 1.0 : -1.0;
+		// return fmod(runTime, 1.0 / hz) < 1.0 / (2.0 * hz) ? 1.0 : -1.0;
+		return sin(modFreq) > 0.0 ? 1.0 : -1.0;
 
 	case AnalogSquare: {
 		double output{ 0.0 };
 
 		for (double i = 1.0; i < 100.0; i++)
-			output += sin(HzToW(hz) * runTime * (2.0 * i - 1.0)) / (2.0 * i - 1.0);
+			output += sin(modFreq * (2.0 * i - 1.0)) / (2.0 * i - 1.0);
 
 		return (4.0 / PI) * output;
 	}
 			
 	case Triangle:
-		return asin(sin(HzToW(hz) * runTime)) * 2.0 / PI;
+		return asin(sin(modFreq)) * 2.0 / PI;
 		
 	case AnalogSawtooth: {
 		double output{ 0.0 };
 
 		for (double n = 1.0; n < 100.0; n++)
-			output += sin(n * HzToW(hz) * runTime) / n;
+			output += sin(n * modFreq) / n;
 
 		return -2.0 / PI * output;
 	}
@@ -108,12 +156,12 @@ double Oscillator(double runTime, double hz, waveTypes waveType) {
 		return 2.0 * hz * fmod(runTime, 1.0 / hz) - 1;
 
 	default:
-		return 0.0;
+		return 2.0 * static_cast<double>(rand()) / static_cast<double>(RAND_MAX) - 1.0;
 	}
 }
 
 double MakeNoise(double runTime) {
-	return masterVolume * envelope.GetAmplitude(runTime) * Oscillator(runTime, frequencyOutput, Square);
+	return masterVolume * voice->GetSound(runTime, frequencyOutput);
 }
 
 int main() {
@@ -122,10 +170,12 @@ int main() {
 	for (auto device : devices)
 		wcout << "Found output device: " << device << endl;
 
+	voice = new Bell();
+
 	olcNoiseMaker<short> sound(devices.at(0), 44100, 1, 8, 512);
 	sound.SetUserFunction(MakeNoise);
 
-	double octaveBaseFrequency{ 110.0 };
+	double octaveBaseFrequency{ 220.0 };
 	double d12thRootOf2{ pow(2.0, 1.0 / 12.0) };
 
 	int currentKey{ -1 };
@@ -143,14 +193,14 @@ int main() {
 				continue;
 
 			frequencyOutput = octaveBaseFrequency * pow(d12thRootOf2, i);
-			envelope.NotePressed(sound.GetTime());
+			voice->envelope.NotePressed(sound.GetTime());
 			currentKey = i;
 		}
 
 		if (isKeyPressed || currentKey == -1)
 			continue;
 
-		envelope.NoteReleased(sound.GetTime());
+		voice->envelope.NoteReleased(sound.GetTime());
 		currentKey = -1;
 	}
 
